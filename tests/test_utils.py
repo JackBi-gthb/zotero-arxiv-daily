@@ -186,6 +186,70 @@ def test_send_email_falls_back_to_plain(config, monkeypatch):
     assert len(sent) == 1
 
 
+def test_send_email_retries_and_succeeds(config, monkeypatch):
+    sent = []
+    calls = {"login": 0}
+    waits = []
+
+    class StubSMTPRetry:
+        def __init__(self, *a, **kw):
+            pass
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            calls["login"] += 1
+            if calls["login"] == 1:
+                raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+
+        def sendmail(self, sender, recipients, msg):
+            sent.append((sender, recipients, msg))
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(smtplib, "SMTP", StubSMTPRetry)
+    monkeypatch.setattr("zotero_arxiv_daily.utils.time.sleep", lambda seconds: waits.append(seconds))
+
+    send_email(config, "<html>retry-ok</html>")
+
+    assert calls["login"] == 2
+    assert waits == [2]
+    assert len(sent) == 1
+
+
+def test_send_email_retries_and_raises_after_exhaustion(config, monkeypatch):
+    calls = {"login": 0}
+    waits = []
+
+    class StubSMTPAlwaysFail:
+        def __init__(self, *a, **kw):
+            pass
+
+        def starttls(self):
+            pass
+
+        def login(self, user, password):
+            calls["login"] += 1
+            raise smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+
+        def sendmail(self, sender, recipients, msg):
+            pass
+
+        def quit(self):
+            pass
+
+    monkeypatch.setattr(smtplib, "SMTP", StubSMTPAlwaysFail)
+    monkeypatch.setattr("zotero_arxiv_daily.utils.time.sleep", lambda seconds: waits.append(seconds))
+
+    with pytest.raises(smtplib.SMTPServerDisconnected):
+        send_email(config, "<html>retry-fail</html>")
+
+    assert calls["login"] == 3
+    assert waits == [2, 4]
+
+
 # ---------------------------------------------------------------------------
 # extract_tex_code_from_tar
 # ---------------------------------------------------------------------------
