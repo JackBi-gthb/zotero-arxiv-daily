@@ -3,6 +3,7 @@ import re
 import glob
 import math
 import smtplib
+import time
 from collections import Counter
 from email.header import Header
 from email.mime.text import MIMEText
@@ -155,17 +156,48 @@ def send_email(config:DictConfig, html:str):
     today = datetime.datetime.now().strftime('%Y/%m/%d')
     msg['Subject'] = Header(f'Daily arXiv {today}', 'utf-8').encode()
 
-    try:
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-    except Exception as e:
-        logger.debug(f"Failed to use TLS. {e}\nTry to use SSL.")
-        try:
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port)
-        except Exception as e:
-            logger.debug(f"Failed to use SSL. {e}\nTry to use plain text.")
-            server = smtplib.SMTP(smtp_server, smtp_port)
+    max_attempts = 3
 
-    server.login(sender, password)
-    server.sendmail(sender, [receiver], msg.as_string())
-    server.quit()
+    def _connect_server():
+        try:
+            server = smtplib.SMTP(smtp_server, smtp_port)
+            server.starttls()
+            return server
+        except Exception as e:
+            logger.debug(f"Failed to use TLS. {e}\nTry to use SSL.")
+            try:
+                return smtplib.SMTP_SSL(smtp_server, smtp_port)
+            except Exception as e:
+                logger.debug(f"Failed to use SSL. {e}\nTry to use plain text.")
+                return smtplib.SMTP(smtp_server, smtp_port)
+
+    for attempt in range(1, max_attempts + 1):
+        server = None
+        phase = "connect"
+        try:
+            server = _connect_server()
+            phase = "login"
+            server.login(sender, password)
+            phase = "sendmail"
+            server.sendmail(sender, [receiver], msg.as_string())
+            return
+        except (smtplib.SMTPException, OSError, ConnectionError, TimeoutError) as e:
+            if attempt == max_attempts:
+                logger.exception(
+                    f"Failed to send email after {max_attempts} attempts "
+                    f"(smtp_server={smtp_server}, smtp_port={smtp_port}, phase={phase})."
+                )
+                raise
+            wait_seconds = 2 ** attempt
+            logger.warning(
+                f"SMTP send attempt {attempt}/{max_attempts} failed "
+                f"(smtp_server={smtp_server}, smtp_port={smtp_port}, phase={phase}): "
+                f"{type(e).__name__}: {e}. Retrying in {wait_seconds}s."
+            )
+            time.sleep(wait_seconds)
+        finally:
+            if server is not None:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
