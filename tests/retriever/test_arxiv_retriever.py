@@ -88,3 +88,54 @@ def test_run_with_hard_timeout_returns_none_on_failure(monkeypatch):
     )
     assert result is None
     assert "boom" in warnings[0]
+
+
+def test_arxiv_retriever_retries_and_recovers_from_503(config, mock_feedparser, monkeypatch):
+    class FakeHTTPError(Exception):
+        def __init__(self, status: int):
+            self.status = status
+
+    calls = {"count": 0}
+    fake_result = SimpleNamespace()
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def results(self, search):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise FakeHTTPError(503)
+            return iter([fake_result])
+
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+    monkeypatch.setattr(arxiv_retriever.arxiv, "HTTPError", FakeHTTPError)
+    monkeypatch.setattr(arxiv_retriever, "sleep", lambda _: None)
+
+    retriever = ArxivRetriever(config)
+    raw_papers = retriever._retrieve_raw_papers()
+
+    assert raw_papers == [fake_result]
+    assert calls["count"] == 2
+
+
+def test_arxiv_retriever_skips_batch_after_retryable_503(config, mock_feedparser, monkeypatch):
+    class FakeHTTPError(Exception):
+        def __init__(self, status: int):
+            self.status = status
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        def results(self, search):
+            raise FakeHTTPError(503)
+
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+    monkeypatch.setattr(arxiv_retriever.arxiv, "HTTPError", FakeHTTPError)
+    monkeypatch.setattr(arxiv_retriever, "sleep", lambda _: None)
+
+    retriever = ArxivRetriever(config)
+    raw_papers = retriever._retrieve_raw_papers()
+
+    assert raw_papers == []
